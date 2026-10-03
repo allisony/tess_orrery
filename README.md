@@ -1,7 +1,6 @@
-# Kepler Orrery
+# TESS Orrery (after Ethan Kruse's Kepler Orrery)
 
-This is the source code to create the Kepler orrery featured in
-[this video (update 5)](https://www.youtube.com/watch?v=Td_YeAdygJE) and [update 4](https://www.youtube.com/watch?v=_DnDeBa0KFc).
+Adapted kepler_orrery code to create a TESS orrery.
 
 Everything can be run using python assuming the following packages are
 installed (most are defaults in every python installation):
@@ -23,3 +22,7 @@ The movie can be recreated with the default settings by running
 `python orrery.py`
 
 `./makeorrery_movie.sh movie/ orrery_movie.mp4 30`
+
+or 
+
+`ffmpeg -framerate 30 -i movie/fig%04d.png -c:v libx264 -pix_fmt yuv420p -crf 18 tess_orrery.mp4`

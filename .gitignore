@@ -1,0 +1,8 @@
+movie/
+__pycache__/
+*.mp4
+*.mov
+*.gif
+rejected_planets.csv
+TESS_planets.csv
+PS_*.csv
