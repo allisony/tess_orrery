@@ -808,8 +808,11 @@ cbar.ax.set_yticklabels(['Earth', 'Mercury', 'Surface\nof Venus', 'Lava'],
                         fontproperties=prop, fontsize=fsz1)
 clab = 'Planet Equilibrium\nTemperature (K)'
 # add the overall label at the bottom of the color bar
+# labelpad (points) moves it down, clear of the bottom tick labels
+clabpads = {480: 6, 720: 8, 1080: 16}
 cbar.ax.set_xlabel(clab, color=fontcol, family=fontfam, fontproperties=prop,
-                   size=fsz1, zorder=5)
+                   size=fsz1, zorder=5, labelpad=clabpads[reso],
+                   linespacing=1.3)
 
 # switch back to the main plot
 plt.sca(ax)
