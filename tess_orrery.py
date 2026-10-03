@@ -116,10 +116,10 @@ outdir = os.path.join(cd, 'movie/')
 # TESS science operations began at ~BTJD 1325 (25 Jul 2018).
 # The movie runs from tstart to tend (default: today).
 tstart = 1325.
-tend = tstart + 365*3. #(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.datetime(2014, 12, 8, 12)).total_seconds() / 86400.
+tend = tstart + 365*2.#(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.datetime(2014, 12, 8, 12)).total_seconds() / 86400.
 # days per frame. Kepler used 0.5. Larger steps make a shorter movie, but
 # planets with P < 2*tstep will alias (appear to stand still or run backwards).
-tstep = 0.1
+tstep = 0.5
 times = np.arange(tstart, tend, tstep)
 # number of frames to produce (seconds of movie = nframes / fps)
 nframes = len(times)
@@ -639,6 +639,30 @@ else:
 
 lws = {480: 1, 720: 1, 1080: 2}
 sslws = {480: 2, 720: 2, 1080: 4}
+# Solar System orbits are dashed. Matplotlib sizes dashes in screen points,
+# so while the camera zooms the circumference grows but the dashes don't:
+# dashes get added/removed and slide around the circle, which looks like the
+# orbit is rotating. Instead, each dashed orbit keeps a fixed number of
+# dashes and their length is rescaled with the zoom every frame.
+ss_orbits = []
+fig_width_pts = fig.get_size_inches()[0] * 72.
+xdiff_full = np.diff(plt.xlim())[0] / 2.
+# matplotlib's default dashed pattern, in units of the line width
+dash_on, dash_off = 3.7, 1.6
+
+
+def update_dashes(zoom):
+    """Rescale Solar System dashes so their count stays fixed."""
+    # points per AU at this zoom level
+    ppu = fig_width_pts / (2. * xdiff_full * zoom)
+    for art, a, lw, ndash in ss_orbits:
+        period = 2. * np.pi * a * ppu / ndash  # one dash + gap, in points
+        frac = dash_on / (dash_on + dash_off)
+        scale = lw if plt.rcParams['lines.scale_dashes'] else 1.
+        art.set_linestyle((0, (period * frac / scale,
+                               period * (1. - frac) / scale)))
+
+
 # plot the orbital circles for every planet
 for ii in np.arange(len(t0s)):
     # solid, thinner lines for normal planets
@@ -663,6 +687,12 @@ for ii in np.arange(len(t0s)):
                 alpha=orbitalpha, fill=False,
                 color=orbitcol, zorder=zo, ls=ls, lw=lw)
     fig.gca().add_artist(c)
+    if usedkics[ii] == kicsolar:
+        # number of dashes that looks like the default style at full zoom
+        ppu = fig_width_pts / (2. * xdiff_full)
+        ndash = 2. * np.pi * a * ppu / ((dash_on + dash_off) * lw)
+        ss_orbits.append((c, a, lw, max(int(round(ndash)), 12)))
+update_dashes(1.)
 
 # set up the planet size scale
 sscales = {480: 12., 720: 30., 1080: 50.}
@@ -858,6 +888,7 @@ if makemovie:
         # re-zoom to appropriate level
         plt.xlim([x0s[ii] - xdiff * zooms[ii], x0s[ii] + xdiff * zooms[ii]])
         plt.ylim([y0s[ii] - ydiff * zooms[ii], y0s[ii] + ydiff * zooms[ii]])
+        update_dashes(zooms[ii])
 
         # elapsed time since the start of the movie
         text = plt.text(1. - txtxoff, 1. - txtyoff1,

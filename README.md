@@ -26,3 +26,12 @@ The movie can be recreated with the default settings by running
 or 
 
 `ffmpeg -framerate 30 -i movie/fig%04d.png -c:v libx264 -pix_fmt yuv420p -crf 18 tess_orrery.mp4`
+
+A gif can be created by running
+
+`ffmpeg -framerate 25 -start_number 735 -i movie/fig%04d.png -frames:v 140 \
+  -vf "scale=800:-1:flags=lanczos,palettegen=stats_mode=diff" palette.png`
+
+`ffmpeg -framerate 25 -start_number 735 -i movie/fig%04d.png -i palette.png -frames:v 140 \
+  -lavfi "scale=800:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=none" \
+  -loop 0 tess_orrery_zoomout.gif`
