@@ -17,7 +17,7 @@ cd = os.path.abspath(os.path.dirname(__file__))
 #               this script as PS_<date>_<time>.csv so the run is reproducible
 #               (switch to 'file' with that name to reuse it).
 #   'file':     use a table you already downloaded (planetlist below).
-data_source = 'file'
+data_source = 'download'
 
 # file to use when data_source = 'file'. Give a full path if it isn't in the
 # same folder as this script.
@@ -43,6 +43,36 @@ ecc_min = 0.1
 # star (apoastron). A single wide, eccentric orbit forces everything else
 # away from it and leaves a big hole. None keeps everything.
 max_apoastron = None
+
+# Fill in missing stellar mass, radius, Teff, and log g from the TESS Input
+# Catalog (TIC v8, queried from MAST with astroquery). Results are cached in
+# tic_stellar_cache.csv so each star is only queried once. Requires
+# `pip install astroquery`; if it isn't installed this step is skipped.
+use_tic = True
+
+# Manual corrections to the archive's default parameter sets, keyed by
+# pl_name. Any PS column can be set. Applied before any filtering.
+# Fill blanks in each planet's default parameter set from its other
+# parameter sets in the PS table, following the archive's Composite table
+# approach (pscp_about): keep the default value; if it's missing, take the
+# value from the most recently published other set that has one. Stellar
+# columns can also come from any planet orbiting the same host. Requires a
+# PS file that includes non-default rows (the archive's full PS download,
+# or data_source = 'download').
+infill_from_other_sets = True
+
+# Bond albedo used when Teq has to be computed (catalog Teq values are left
+# as published). 0 with full day-night redistribution is the standard
+# convention, and what the archive uses for its Composite table.
+bond_albedo = 0.
+
+overrides = {
+    # default parameter set (Alexoudi 2022) has no period
+    'WASP-108 b': {'pl_orbper': 2.6755},
+}
+
+# planets to leave out entirely, by pl_name
+exclude_planets = []
 
 # minimum number of planets for a system to be plotted
 # (Kepler orrery used multis only; set to 1 to include every TOI)
@@ -116,7 +146,7 @@ outdir = os.path.join(cd, 'movie/')
 # TESS science operations began at ~BTJD 1325 (25 Jul 2018).
 # The movie runs from tstart to tend (default: today).
 tstart = 1325.
-tend = tstart + 365*2.#(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.datetime(2014, 12, 8, 12)).total_seconds() / 86400.
+tend = tstart + 365.*2#(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.datetime(2014, 12, 8, 12)).total_seconds() / 86400.
 # days per frame. Kepler used 0.5. Larger steps make a shorter movie, but
 # planets with P < 2*tstep will alias (appear to stand still or run backwards).
 tstep = 0.5
@@ -146,11 +176,15 @@ kicsolar = -5
 if data_source == 'download':
     from urllib.parse import quote
     cols = ('pl_name,hostname,tic_id,default_flag,disc_facility,tran_flag,'
-            'pl_orbper,pl_tranmid,pl_orbsmax,pl_orbeccen,pl_orblper,'
+            'pl_orbper,pl_tranmid,pl_orbsmax,pl_ratdor,pl_orbeccen,pl_orblper,'
             'pl_rade,pl_eqt,pl_insol,st_teff,st_rad,st_mass,st_logg')
     # all default parameter sets, so include_companions can find non-TESS
     # planets in TESS systems
-    query = 'select {0} from ps where default_flag = 1'.format(cols)
+    cols += ',pl_pubdate'
+    # all parameter sets if we're infilling, otherwise just the defaults
+    query = 'select {0} from ps'.format(cols)
+    if not infill_from_other_sets:
+        query += ' where default_flag = 1'
     url = ('https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=' +
            quote(query) + '&format=csv')
     print('Downloading the PS table from the NASA Exoplanet Archive...')
@@ -172,12 +206,64 @@ with open(planetlist) as ff:
             break
         nskip += 1
 all_planets = pd.read_csv(planetlist, skiprows=nskip)
-pl = all_planets[all_planets['default_flag'] == 1]
+pl = all_planets[all_planets['default_flag'] == 1].copy()
+
+# fill blanks in the default sets from the other published parameter sets
+infill_cols = ['pl_orbper', 'pl_tranmid', 'pl_orbsmax', 'pl_ratdor',
+               'pl_orbeccen', 'pl_orblper', 'pl_rade', 'pl_eqt', 'pl_insol',
+               'tran_flag']
+star_cols = ['st_teff', 'st_rad', 'st_mass', 'st_logg']
+if infill_from_other_sets:
+    others = all_planets[all_planets['default_flag'] != 1]
+    if len(others) == 0:
+        print('Note: {0} has only default parameter sets; cannot infill. '
+              'Download the full PS table to enable this.'.format(
+                  os.path.basename(planetlist)))
+    else:
+        # most recent publication first
+        if 'pl_pubdate' in others.columns:
+            others = others.assign(_pd=pd.to_datetime(
+                others['pl_pubdate'], errors='coerce')).sort_values(
+                '_pd', ascending=False)
+        print('\n--- Values filled from non-default parameter sets ---')
+        pl = pl.set_index('pl_name', drop=False)
+        # first non-null value per planet (most recent first)
+        byplanet = others.groupby('pl_name').first()
+        for col in [c for c in infill_cols + star_cols if c in pl.columns]:
+            fillvals = pl['pl_name'].map(byplanet[col])
+            fill = pl[col].isna() & fillvals.notna()
+            pl.loc[fill, col] = fillvals[fill]
+            nfill = fill.sum()
+            # stellar values can also come from other planets of the host
+            if col in star_cols:
+                byhost = all_planets.sort_values(
+                    'default_flag', ascending=False).groupby(
+                    'hostname')[col].first()
+                hostvals = pl['hostname'].map(byhost)
+                fill2 = pl[col].isna() & hostvals.notna()
+                pl.loc[fill2, col] = hostvals[fill2]
+                nfill += fill2.sum()
+            if nfill > 0:
+                print('{0:6d}  {1}'.format(nfill, col))
+        pl = pl.reset_index(drop=True)
+        print()
+
+# apply manual corrections and exclusions
+for name, vals in overrides.items():
+    match = pl['pl_name'] == name
+    if not match.any():
+        print('Note: override for {0} matches no planet'.format(name))
+    for col, val in vals.items():
+        pl.loc[match, col] = val
+if len(exclude_planets) > 0:
+    pl = pl[~pl['pl_name'].isin(exclude_planets)]
 
 # optional columns: if they weren't included in the download, fall back
 for col, fill in [('pl_tranmid', np.nan), ('pl_orbeccen', np.nan),
                   ('pl_orblper', np.nan), ('pl_eqt', np.nan),
-                  ('st_mass', np.nan), ('tic_id', np.nan)]:
+                  ('st_mass', np.nan), ('tic_id', np.nan),
+                  ('st_logg', np.nan), ('pl_ratdor', np.nan),
+                  ('pl_insol', np.nan)]:
     if col not in pl.columns:
         print('Note: column {0} not in {1}; using defaults'.format(
             col, os.path.basename(planetlist)))
@@ -214,13 +300,109 @@ if notic.any():
     pl.loc[notic, 'tid'] = 1e10 + hostcodes[notic.values]
 
 # semi-major axis: use the catalog value, else Kepler's third law from M*
-semi_calc = (pl['st_mass'] * (pl['pl_orbper'] / 365.25) ** 2.) ** (1. / 3.)
-semi_all = pl['pl_orbsmax'].fillna(semi_calc)
+# fill missing stellar parameters from the TIC
+stellar_cols = {'st_mass': 'mass', 'st_rad': 'rad', 'st_teff': 'Teff',
+                'st_logg': 'logg'}
+if use_tic:
+    # only look up stars where a missing stellar value actually matters:
+    # no catalog a and no M*, or no catalog Teq and no Teff or R*
+    needs = ((pl['pl_orbsmax'].isna() & pl['st_mass'].isna()) |
+             (pl['pl_eqt'].isna() &
+              (pl['st_teff'].isna() | pl['st_rad'].isna()))) & \
+        (pl['tid'] < 1e10)
+    want = np.unique(pl.loc[needs, 'tid'].astype(np.int64))
+    cachefile = os.path.join(cd, 'tic_stellar_cache.csv')
+    if os.path.exists(cachefile):
+        cache = pd.read_csv(cachefile)
+    else:
+        cache = pd.DataFrame(columns=['ID'] + list(stellar_cols.values()))
+    todo = np.setdiff1d(want, cache['ID'].astype(np.int64).values)
+    if len(todo) > 0:
+        try:
+            from astroquery.mast import Catalogs
+            print('Querying the TIC at MAST for {0} stars...'.format(
+                len(todo)))
+            chunks = []
+            for i0 in range(0, len(todo), 500):
+                res = Catalogs.query_criteria(
+                    catalog='Tic', ID=[int(x) for x in todo[i0:i0 + 500]])
+                res = res.to_pandas()[['ID'] + list(stellar_cols.values())]
+                chunks.append(res)
+            new = pd.concat(chunks)
+            new['ID'] = new['ID'].astype(np.int64)
+            # remember stars the TIC returned nothing for, too
+            missing = np.setdiff1d(todo, new['ID'].values)
+            new = pd.concat([new, pd.DataFrame({'ID': missing})])
+            cache = pd.concat([cache, new], ignore_index=True)
+            cache.to_csv(cachefile, index=False)
+        except ImportError:
+            print('Note: astroquery not installed; skipping TIC lookup '
+                  '(pip install astroquery)')
+        except Exception as err:
+            print('Note: TIC query failed ({0}); skipping'.format(err))
+    if len(cache) > 0:
+        cache = cache.drop_duplicates('ID').set_index('ID')
+        tidint = pl['tid'].astype(np.int64)
+        print('Stellar parameters filled from the TIC:')
+        for plcol, ticcol in stellar_cols.items():
+            ticvals = tidint.map(cache[ticcol].astype(float))
+            fill = pl[plcol].isna() & ticvals.notna()
+            pl.loc[fill, plcol] = ticvals[fill]
+            print('{0:6d}  {1}'.format(fill.sum(), plcol))
 
-# fill missing equilibrium temperatures from Teff, R*, a (albedo 0)
-teq_calc = pl['st_teff'] * np.sqrt(pl['st_rad'] * 0.00465047 /
-                                    (2. * semi_all))
-teq_all = pl['pl_eqt'].fillna(teq_calc)
+# Semi-major axis, using the first available of:
+#   1. the catalog value (pl_orbsmax)
+#   2. a/R* from the transit fit (pl_ratdor) times R*
+#   3. Kepler's third law with the catalog stellar mass
+#   4. Kepler's third law with M* from log g and R* (M = g R^2 / G)
+#   5. Kepler's third law with M* estimated from Teff, assuming a
+#      main-sequence star (Mamajek's dwarf sequence)
+#   6. Kepler's third law assuming M* = 1 Msun.
+# a scales as M^(1/3), so even a factor-of-2 error in mass is only ~26% in a.
+# (Catalog M*, R*, Teff, log g may have been filled from the TIC above.)
+RSUN_AU = 0.00465047
+period_yr = pl['pl_orbper'] / 365.25
+mstar_logg = 10. ** (pl['st_logg'] - 4.438) * pl['st_rad'] ** 2.
+# approximate main-sequence Teff (K) -> mass (Msun) relation
+ms_teff = np.array([2400, 2650, 3060, 3210, 3400, 3550, 3850, 4050, 4440,
+                    4830, 5270, 5490, 5770, 6100, 6510, 7220, 8100, 9700])
+ms_mass = np.array([0.08, 0.09, 0.16, 0.23, 0.37, 0.44, 0.57, 0.63, 0.70,
+                    0.78, 0.88, 0.94, 1.00, 1.13, 1.30, 1.60, 1.90, 2.20])
+mstar_teff = pd.Series(np.interp(pl['st_teff'], ms_teff, ms_mass),
+                       index=pl.index).where(pl['st_teff'].notna())
+semi_steps = [
+    ('catalog a', pl['pl_orbsmax']),
+    ('a/R* x R*', pl['pl_ratdor'] * pl['st_rad'] * RSUN_AU),
+    ('P + catalog M*', (pl['st_mass'] * period_yr ** 2.) ** (1. / 3.)),
+    ('P + M* from log g, R*', (mstar_logg * period_yr ** 2.) ** (1. / 3.)),
+    ('P + M* from Teff', (mstar_teff * period_yr ** 2.) ** (1. / 3.)),
+    ('P + assumed 1 Msun', period_yr ** (2. / 3.)),
+]
+semi_all = pd.Series(np.nan, index=pl.index)
+print('Semi-major axis sources:')
+for label, vals in semi_steps:
+    use = semi_all.isna() & vals.notna() & (vals > 0)
+    semi_all[use] = vals[use]
+    print('{0:6d}  {1}'.format(use.sum(), label))
+
+# Equilibrium temperature (full day-night redistribution), using:
+#   1. the catalog value (pl_eqt)
+#   2. Teq = Teff (1 - A)^(1/4) sqrt(R* / 2a)
+#   3. insolation: Teq = 278.6 K (1 - A)^(1/4) (S/S_earth)^(1/4)
+# where A = bond_albedo for the computed values.
+albfac = (1. - bond_albedo) ** 0.25
+teq_steps = [
+    ('catalog Teq', pl['pl_eqt']),
+    ('Teff, R*, a', albfac * pl['st_teff'] *
+     np.sqrt(pl['st_rad'] * RSUN_AU / (2. * semi_all))),
+    ('insolation', albfac * 278.6 * pl['pl_insol'] ** 0.25),
+]
+teq_all = pd.Series(np.nan, index=pl.index)
+print('Equilibrium temperature sources:')
+for label, vals in teq_steps:
+    use = teq_all.isna() & vals.notna() & (vals > 0)
+    teq_all[use] = vals[use]
+    print('{0:6d}  {1}'.format(use.sum(), label))
 
 kics = pl['tid'].values.astype(float)
 hosts = pl['hostname'].values
