@@ -146,7 +146,7 @@ outdir = os.path.join(cd, 'movie/')
 # TESS science operations began at ~BTJD 1325 (25 Jul 2018).
 # The movie runs from tstart to tend (default: today).
 tstart = 1325.
-tend = tstart + 365.*2#(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.datetime(2014, 12, 8, 12)).total_seconds() / 86400.
+tend = tstart + 365.*2##(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.datetime(2014, 12, 8, 12)).total_seconds() / 86400.
 # days per frame. Kepler used 0.5. Larger steps make a shorter movie, but
 # planets with P < 2*tstep will alias (appear to stand still or run backwards).
 tstep = 0.5
@@ -515,6 +515,9 @@ def system_geometry(kic):
 if lcenfile is not None:
     multikics, xcens, ycens, maxsemis = np.loadtxt(lcenfile, unpack=True)
     nplan = len(multikics)
+    if addsolar and (multikics == kicsolar).any():
+        ssx = xcens[multikics == kicsolar][0]
+        ssy = ycens[multikics == kicsolar][0]
     geo = np.array([system_geometry(k) for k in multikics])
     cdx, cdy = geo[:, 0], geo[:, 1]
 # otherwise figure out how to fit all the planets into a nice distribution
@@ -549,9 +552,29 @@ else:
     #np.random.shuffle(smalls)
     #inds = np.concatenate((bigs, smalls))
 
+    # the single largest system always goes first and sits at the center of
+    # the field, so everything else packs around it instead of it landing
+    # at the edge
+    inds = np.concatenate(([np.argmax(maxsemis)],
+                           inds[inds != np.argmax(maxsemis)]))
+
     # reorder to place them
     maxsemis = maxsemis[inds]
     multikics = multikics[inds]
+    rbig = maxsemis[0]
+    bigkic = multikics[0]
+
+    # keep the fixed Solar System position clear of the central system
+    if addsolar and fixedpos:
+        dss = np.hypot(ssx, ssy)
+        dmin = rbig + 1.524 + spacing
+        if dss < dmin:
+            if dss == 0:
+                ssx, ssy = dmin, 0.
+            else:
+                ssx, ssy = ssx * dmin / dss, ssy * dmin / dss
+            print('Moved the Solar System to ({0:.2f}, {1:.2f}) AU to '
+                  'clear the largest system'.format(ssx, ssy))
 
     # add in the solar system if desired
     if addsolar:
@@ -594,6 +617,11 @@ else:
         if multikics[ii] == kicsolar and fixedpos:
             xcens = np.concatenate((xcens, [ssx]))
             ycens = np.concatenate((ycens, [ssy]))
+            repeat = False
+        # the largest system goes at the center
+        elif multikics[ii] == bigkic:
+            xcens = np.concatenate((xcens, [0.]))
+            ycens = np.concatenate((ycens, [0.]))
             repeat = False
         else:
             xcens = np.concatenate((xcens, [0.]))
